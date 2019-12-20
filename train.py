@@ -49,6 +49,14 @@ if f:
         hyp[k] = v
 
 
+# additional subgradient descent on the sparsity-induced penalty term
+# x_{k+1} = x_{k} - \alpha_{k} * g^{k}
+def updateBN(scale, model):
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.weight.grad.data.add_(scale*torch.sign(m.weight.data))  # L1
+
+
 def train():
     cfg = opt.cfg
     data = opt.data
@@ -179,13 +187,13 @@ def train():
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
 
     # Initialize distributed training
-    if device.type != 'cpu' and torch.cuda.device_count() > 1:
-        dist.init_process_group(backend='nccl',  # 'distributed backend'
-                                init_method='tcp://127.0.0.1:9999',  # distributed training init method
-                                world_size=1,  # number of nodes for distributed training
-                                rank=0)  # distributed training node rank
-        model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
-        model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
+    # if device.type != 'cpu' and torch.cuda.device_count() > 1:
+    #     dist.init_process_group(backend='nccl',  # 'distributed backend'
+    #                             init_method='tcp://127.0.0.1:9999',  # distributed training init method
+    #                             world_size=1,  # number of nodes for distributed training
+    #                             rank=0)  # distributed training node rank
+    #     model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+    #     model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # Dataset
     dataset = LoadImagesAndLabels(train_path, img_size, batch_size,
@@ -303,6 +311,8 @@ def train():
 
             # Accumulate gradient for x batches before optimizing
             if ni % accumulate == 0:
+                if opt.sparsity != 0:
+                    updateBN(opt.sparsity, model)
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -439,6 +449,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1 or cpu)')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--sparsity', type=float, default=0, help='enable sparsity training with a float value (recommend: 0.0001)')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
