@@ -7,7 +7,7 @@ from utils.utils import *
 ONNX_EXPORT = False
 
 
-def create_modules(module_defs, img_size, arc):
+def create_modules(module_defs, img_size, arc, trace=False):
     # Constructs module list of layer blocks from module configuration in module_defs
 
     hyperparams = module_defs.pop(0)
@@ -73,11 +73,20 @@ def create_modules(module_defs, img_size, arc):
         elif mdef['type'] == 'yolo':
             yolo_index += 1
             mask = [int(x) for x in mdef['mask'].split(',')]  # anchor mask
-            modules = YOLOLayer(anchors=mdef['anchors'][mask],  # anchor list
-                                nc=int(mdef['classes']),  # number of classes
-                                img_size=img_size,  # (416, 416)
-                                yolo_index=yolo_index,  # 0, 1 or 2
-                                arc=arc)  # yolo architecture
+            if trace:
+                modules = YOLOLayerTrace(
+                    anchors=mdef['anchors'][mask],  # anchor list
+                    nc=int(mdef['classes']),  # number of classes
+                    img_size=img_size,
+                    yolo_index=yolo_index,  # 0, 1 or 2
+                    arc=arc)  # yolo architecture
+            else:
+                modules = YOLOLayer(
+                    anchors=mdef['anchors'][mask],  # anchor list
+                    nc=int(mdef['classes']),  # number of classes
+                    img_size=img_size,  # (416, 416)
+                    yolo_index=yolo_index,  # 0, 1 or 2
+                    arc=arc)  # yolo architecture
 
             # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
             try:
@@ -140,6 +149,44 @@ class Swish(nn.Module):
 class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
     def forward(self, x):
         return x.mul_(F.softplus(x).tanh())
+
+
+class YOLOLayerTrace(nn.Module):
+    def __init__(self, anchors, nc, img_size, yolo_index, arc):
+        super(YOLOLayerTrace, self).__init__()
+        div = None
+        if yolo_index == 0:
+            div = 32
+        if yolo_index == 1:
+            div = 16
+        if yolo_index == 2:
+            div = 8
+
+        self.anchors = torch.Tensor(anchors)
+        self.na = len(anchors)  # number of anchors (3)
+        self.nc = nc  # number of classes
+        self.nx = img_size[1] // div  # number of x grid points
+        self.ny = img_size[0] // div  # number of y grid points
+        self.arc = arc
+        create_grids(self, img_size, (self.nx, self.ny), 'cuda:0', torch.float32)
+
+    def forward(self, p, img_size, var=None):
+        bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
+
+        # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+        p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
+
+        # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
+        io = p.clone()  # inference output
+        io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
+        io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
+        # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
+        io[..., :4] *= self.stride
+
+        torch.sigmoid_(io[..., 4:])
+
+        # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
+        return io.view(bs, -1, 5 + self.nc), p
 
 
 class YOLOLayer(nn.Module):
@@ -226,11 +273,11 @@ class YOLOLayer(nn.Module):
 class Darknet(nn.Module):
     # YOLOv3 object detection model
 
-    def __init__(self, cfg, img_size=(416, 416), arc='default'):
+    def __init__(self, cfg, img_size=(416, 416), arc='default', trace=False):
         super(Darknet, self).__init__()
 
         self.module_defs = parse_model_cfg(cfg)
-        self.module_list, self.routs = create_modules(self.module_defs, img_size, arc)
+        self.module_list, self.routs = create_modules(self.module_defs, img_size, arc, trace=trace)
         self.yolo_layers = get_yolo_layers(self)
 
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
