@@ -387,7 +387,7 @@ def train():
 
             # Save backup every 10 epochs (optional)
             if epoch > 0 and epoch % 10 == 0:
-                torch.save(chkpt, join(opt.out, 'backup%g.pt'.format(epoch)))
+                torch.save(chkpt, join(opt.out, 'backup_{}.pt'.format(epoch)))
 
             # Delete checkpoint
             del chkpt
