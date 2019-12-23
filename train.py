@@ -1,5 +1,5 @@
+from os.path import join
 import argparse
-
 import torch.distributed as dist
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
@@ -15,13 +15,9 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
 except:
     mixed_precision = False  # not installed
 
-wdir = 'weights' + os.sep  # weights dir
-last = wdir + 'last.pt'
-best = wdir + 'best.pt'
 results_file = 'results.txt'
 
 # Hyperparameters (results68: 59.2 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
-
 hyp = {'giou': 3.54,  # giou loss gain
        'cls': 37.4,  # cls loss gain
        'cls_pw': 1.0,  # cls BCELoss positive_weight
@@ -114,30 +110,31 @@ def train():
     start_epoch = 0
     best_fitness = float('inf')
     attempt_download(weights)
-    if weights.endswith('.pt'):  # pytorch format
-        # possible weights are '*.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
+    if weights.endswith('.pt'):
         chkpt = torch.load(weights, map_location=device)
-
-        # load model
         try:
-            chkpt['model'] = {k: v for k, v in chkpt['model'].items() if model.state_dict()[k].numel() == v.numel()}
-            model.load_state_dict(chkpt['model'], strict=False)
+            if 'model' in chkpt:
+                chkpt_ = chkpt['model']
+            else:
+                chkpt_ = chkpt
+            chkpt['model'] = {k: v for k, v in chkpt_.items() if model.state_dict()[k].numel() == v.numel()}
+            model.load_state_dict(chkpt_, strict=False)
         except KeyError as e:
-            s = "%s is not compatible with %s. Specify --weights '' or specify a --cfg compatible with %s. " \
-                "See https://github.com/ultralytics/yolov3/issues/657" % (opt.weights, opt.cfg, opt.weights)
+            s = '%s is not compatible with %s.'.format(opt.weights, opt.cfg)
             raise KeyError(s) from e
 
         # load optimizer
-        if chkpt['optimizer'] is not None:
+        if 'optimizer' in chkpt:
             optimizer.load_state_dict(chkpt['optimizer'])
             best_fitness = chkpt['best_fitness']
 
         # load results
-        if chkpt.get('training_results') is not None:
+        if 'training_results' in chkpt:
             with open(results_file, 'w') as file:
                 file.write(chkpt['training_results'])  # write results.txt
 
-        start_epoch = chkpt['epoch'] + 1
+        if 'epoch' in chkpt:
+            start_epoch = chkpt['epoch'] + 1
         del chkpt
 
     elif len(weights) > 0:  # darknet format
@@ -382,15 +379,15 @@ def train():
                          'optimizer': None if final_epoch else optimizer.state_dict()}
 
             # Save last checkpoint
-            torch.save(chkpt, last)
+            torch.save(chkpt, join(opt.out, 'last.pt'))
 
             # Save best checkpoint
             if best_fitness == fitness:
-                torch.save(chkpt, best)
+                torch.save(chkpt, join(opt.out, 'best.pt'))
 
             # Save backup every 10 epochs (optional)
             if epoch > 0 and epoch % 10 == 0:
-                torch.save(chkpt, wdir + 'backup%g.pt' % epoch)
+                torch.save(chkpt, join(opt.out, 'backup%g.pt'.format(epoch)))
 
             # Delete checkpoint
             del chkpt
@@ -401,12 +398,12 @@ def train():
     if len(opt.name) and not opt.prebias:
         fresults, flast, fbest = 'results%s.txt' % opt.name, 'last%s.pt' % opt.name, 'best%s.pt' % opt.name
         os.rename('results.txt', fresults)
-        os.rename(wdir + 'last.pt', wdir + flast) if os.path.exists(wdir + 'last.pt') else None
-        os.rename(wdir + 'best.pt', wdir + fbest) if os.path.exists(wdir + 'best.pt') else None
+        os.rename(join(opt.out, 'last.pt'), join(opt.out, flast)) if os.path.exists(join(opt.out, 'last.pt')) else None
+        os.rename(join(opt.out, 'best.pt'), join(opt.out, fbest)) if os.path.exists(join(opt.out, 'best.pt')) else None
 
         # save to cloud
         if opt.bucket:
-            os.system('gsutil cp %s %s gs://%s' % (fresults, wdir + flast, opt.bucket))
+            os.system('gsutil cp %s %s gs://%s' % (fresults, join(opt.out, flast), opt.bucket))
 
     plot_results()  # save as results.png
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
@@ -425,7 +422,7 @@ def prebias():
         train()  # transfer-learn yolo biases for 1 epoch
         create_backbone(last)  # saved results as backbone.pt
 
-        opt.weights = wdir + 'backbone.pt'  # assign backbone
+        opt.weights = join(opt.out, 'backbone.pt')  # assign backbone
         opt.prebias = False  # disable prebias
         opt.img_weights = a  # reset settings
 
@@ -456,12 +453,16 @@ if __name__ == '__main__':
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
     parser.add_argument('--sparsity', type=float, default=0, help='enable sparsity training with a float value (recommend: 0.0001)')
+    parser.add_argument('--out', type=str, help='output directory')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':
         mixed_precision = False
+
+    if not os.path.exists(opt.out):
+        os.mkdir(opt.out)
 
     # scale hyp['obj'] by img_size (evolved at 416)
     hyp['obj'] *= opt.img_size / 416.
