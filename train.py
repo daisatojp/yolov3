@@ -316,11 +316,16 @@ def train():
                 optimizer.step()
                 optimizer.zero_grad()
 
+            imp = 0
+            for m in model.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    imp += np.count_nonzero(m.weight.data.abs().detach().cpu().numpy() < 0.1)
+
             # Print batch results
             mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
             mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0  # (GB)
-            s = ('%10s' * 2 + '%10.3g' * 6) % (
-                '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
+            s = ('%10s' * 2 + '%10.3g' * 6 + '%10d') % (
+                '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size, imp)
             pbar.set_description(s)
 
             # end batch ------------------------------------------------------------------------------------------------
@@ -357,6 +362,7 @@ def train():
                       'Precision', 'Recall', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification']
             for xi, title in zip(x, titles):
                 tb_writer.add_scalar(title, xi, epoch)
+            tb_writer.add_scalar('imp', imp, epoch)
 
         # Update best mAP
         fitness = sum(results[4:])  # total loss
