@@ -168,7 +168,7 @@ class YOLOLayerTrace(nn.Module):
         self.nx = img_size[1] // div  # number of x grid points
         self.ny = img_size[0] // div  # number of y grid points
         self.arc = arc
-        create_grids(self, img_size, (self.nx, self.ny), 'cuda:0', torch.float32)
+        create_grids(self, img_size, (self.nx, self.ny), 'cpu', torch.float32)
 
     def forward(self, p, img_size, var=None):
         bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
@@ -176,16 +176,14 @@ class YOLOLayerTrace(nn.Module):
         # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
         p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
 
-        # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
-        io = p.clone()  # inference output
-        io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
-        io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
-        # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
-        io[..., :4] *= self.stride
+        io = p.clone()
+        io[..., 0:2].sigmoid_()
+        io[..., 0:2].add_(self.grid_xy)
+        io[..., 2:4].exp_()
+        io[..., 2:4].mul_(self.anchor_wh)
+        io[..., :4].mul_(self.stride)
+        io[..., 4:].sigmoid_()
 
-        torch.sigmoid_(io[..., 4:])
-
-        # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
         return io.view(bs, -1, 5 + self.nc), p
 
 
@@ -283,6 +281,7 @@ class Darknet(nn.Module):
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
         self.version = np.array([0, 2, 5], dtype=np.int32)  # (int32) version info: major, minor, revision
         self.seen = np.array([0], dtype=np.int64)  # (int64) number of images seen during training
+        self.trace = trace
 
     def forward(self, x, var=None):
         img_size = x.shape[-2:]
@@ -310,6 +309,10 @@ class Darknet(nn.Module):
                 x = module(x, img_size)
                 output.append(x)
             layer_outputs.append(x if i in self.routs else [])
+
+        if self.trace:
+            io, _ = list(zip(*output))
+            return torch.cat(io, 1)
 
         if self.training:
             return output
