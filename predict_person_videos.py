@@ -51,6 +51,9 @@ def main():
         src_name = os.path.splitext(os.path.basename(src_path))[0]
         out_dir = os.path.join(dst_dir, src_name)
 
+        if os.path.exists(out_dir):
+            continue
+
         print('out_dir={}'.format(out_dir))
 
         if not os.path.exists(out_dir):

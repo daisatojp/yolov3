@@ -25,9 +25,8 @@ def main():
     out, source, weights, view_img = opt.outdir, opt.source, opt.weights, opt.view_img
 
     device = torch_utils.select_device(opt.device)
-    if os.path.exists(opt.outdir):
-        shutil.rmtree(opt.outdir)
-    os.makedirs(opt.outdir)
+    if not os.path.exists(opt.outdir):
+        os.makedirs(opt.outdir)
 
     model = Darknet(opt.cfg, img_size, trace=False)
 
