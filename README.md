@@ -19,12 +19,6 @@ The https://github.com/ultralytics/yolov3 repo contains inference and training c
 
 **Start Training:** `python3 train.py` to begin training after downloading COCO data with `data/get_coco_dataset.sh`. Each epoch trains on 117,263 images from the train and validate COCO sets, and tests on 5000 images from the COCO validate set.
 
-**Resume Training:** `python3 train.py --resume` to resume training from `weights/last.pt`.
-
-**Plot Training:** `from utils import utils; utils.plot_results()` plots training results from `coco_16img.data`, `coco_64img.data`, 2 example datasets available in the `data/` folder, which train and test on the first 16 and 64 images of the COCO2014-trainval dataset.
-
-<img src="https://user-images.githubusercontent.com/26833433/63258271-fe9d5300-c27b-11e9-9a15-95038daf4438.png" width="900">
-
 ## Image Augmentation
 
 `datasets.py` applies random OpenCV-powered (https://opencv.org/) augmentation to the input images in accordance with the following specifications. Augmentation is applied **only** during training, not during inference. Bounding boxes are automatically tracked and updated with the images. 416 x 416 examples pictured below.
@@ -38,24 +32,6 @@ Scale | +/- 10%
 Reflection | 50% probability (horizontal-only)
 H**S**V Saturation | +/- 50%
 HS**V** Intensity | +/- 50%
-
-## Speed
-
-https://cloud.google.com/deep-learning-vm/  
-**Machine type:** preemptible [n1-standard-16](https://cloud.google.com/compute/docs/machine-types) (16 vCPUs, 60 GB memory)   
-**CPU platform:** Intel Skylake  
-**GPUs:** K80 ($0.20/hr), T4 ($0.35/hr), V100 ($0.83/hr) CUDA with [Nvidia Apex](https://github.com/NVIDIA/apex) FP16/32  
-**HDD:** 1 TB SSD  
-**Dataset:** COCO train 2014 (117,263 images)  
-**Model:** `yolov3-spp.cfg`  
-**Command:**  `python3 train.py --img 416 --batch 32 --accum 2`
-
-GPU |n| `--batch --accum` | img/s | epoch<br>time | epoch<br>cost
---- |--- |--- |--- |--- |---
-K80    |1| 32 x 2 | 11  | 175 min  | $0.58
-T4     |1<br>2| 32 x 2<br>64 x 1 | 41<br>61 | 48 min<br>32 min | $0.28<br>$0.36
-V100   |1<br>2| 32 x 2<br>64 x 1 | 122<br>**178** | 16 min<br>**11 min** | **$0.23**<br>$0.31
-2080Ti |1<br>2| 32 x 2<br>64 x 1 | 81<br>140 | 24 min<br>14 min | -<br>-
 
 # Inference
 
@@ -115,26 +91,3 @@ YOLOv3-tiny<br>YOLOv3<br>YOLOv3-SPP<br>**YOLOv3-SPP ultralytics** |320 |14.0<br>
 YOLOv3-tiny<br>YOLOv3<br>YOLOv3-SPP<br>**YOLOv3-SPP ultralytics** |416 |16.0<br>31.2<br>33.9<br>**39.0** |33.0<br>55.4<br>56.9<br>**59.2**
 YOLOv3-tiny<br>YOLOv3<br>YOLOv3-SPP<br>**YOLOv3-SPP ultralytics** |512 |16.6<br>32.7<br>35.6<br>**40.3** |34.9<br>57.7<br>59.5<br>**60.6**
 YOLOv3-tiny<br>YOLOv3<br>YOLOv3-SPP<br>**YOLOv3-SPP ultralytics** |608 |16.6<br>33.1<br>37.0<br>**40.9** |35.4<br>58.2<br>60.7<br>**60.9**
-
-# Reproduce Our Results
-
-This command trains `yolov3-spp.cfg` from scratch to our mAP above. Training takes about one week on a 2080Ti.
-```bash
-$ python3 train.py --weights '' --cfg yolov3-spp.cfg --epochs 273 --batch 16 --accum 4 --multi --pre
-```
-<img src="https://user-images.githubusercontent.com/26833433/70661588-76bbca00-1c19-11ea-86f9-23350d8c3193.png" width="900">
-
-# Reproduce Our Environment
-
-To access an up-to-date working environment (with all dependencies including CUDA/CUDNN, Python and PyTorch preinstalled), consider a:
-
-- **GCP** Deep Learning VM with $300 free credit offer: See our [GCP Quickstart Guide](https://github.com/ultralytics/yolov3/wiki/GCP-Quickstart) 
-- **Google Colab Notebook** with 12 hours of free GPU time: [Google Colab Notebook](https://colab.research.google.com/drive/1G8T-VFxQkjDe4idzN8F-hbIBqkkkQnxw)
-- **Docker Image** from https://hub.docker.com/r/ultralytics/yolov3. See [Docker Quickstart Guide](https://github.com/ultralytics/yolov3/wiki/Docker-Quickstart) 
-# Citation
-
-[![DOI](https://zenodo.org/badge/146165888.svg)](https://zenodo.org/badge/latestdoi/146165888)
-
-# Contact
-
-**Issues should be raised directly in the repository.** For additional questions or comments please email Glenn Jocher at glenn.jocher@ultralytics.com or visit us at https://contact.ultralytics.com.
