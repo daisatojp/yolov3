@@ -5,6 +5,7 @@ from tqdm import tqdm
 import math
 import random
 from threading import Thread
+import skimage
 import cv2
 import numpy as np
 import torch
@@ -95,6 +96,7 @@ class LoadImages:
         img = img[:, :, ::-1].transpose(2, 0, 1)
         img = np.ascontiguousarray(img, dtype=np.float16 if self.half else np.float32)
         img /= 255.0
+
         return path, img, img0, self.cap
 
     def __new_video(self, path):
@@ -165,30 +167,27 @@ class LoadImagesAndLabels(Dataset):
                  hyp=None,
                  rect=False,
                  image_weights=False,
-                 cache_labels=False,
-                 cache_images=False):
+                 cache_labels=False):
         assert os.path.isfile(path)
         with open(path, 'r') as f:
             self.image_files = [x for x in f.read().splitlines()
                                 if os.path.splitext(x)[-1].lower() in image_formats]
-        n = len(self.image_files)
-        assert n > 0, 'no images found in {}'.format(path)
-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
-        nb = bi[-1] + 1  # number of batches
+        self.label_files = [os.path.splitext(x)[0] + '.txt' for x in self.image_files]
+        image_file_num = len(self.image_files)
+        assert image_file_num > 0, 'no images found in {}'.format(path)
+        batch_index = np.floor(np.arange(image_file_num) / batch_size).astype(np.int)
+        batch_num = batch_index[-1] + 1
 
-        self.n = n
-        self.batch = bi  # batch index of image
+        self.image_file_num = image_file_num
+        self.batch_index = batch_index
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
 
-        # Define labels
-        self.label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
-                            for x in self.image_files]
-
-        # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
+        # rectangular training
+        # https://github.com/ultralytics/yolov3/issues/232
         if self.rect:
             # Read image shapes
             sp = path.replace('.txt', '.shapes')  # shapefile path
@@ -210,9 +209,9 @@ class LoadImagesAndLabels(Dataset):
             ar = ar[i]
 
             # Set training image shapes
-            shapes = [[1, 1]] * nb
-            for i in range(nb):
-                ari = ar[bi == i]
+            shapes = [[1, 1]] * batch_num
+            for i in range(batch_num):
+                ari = ar[batch_index == i]
                 mini, maxi = ari.min(), ari.max()
                 if maxi < 1:
                     shapes[i] = [maxi, 1]
@@ -221,14 +220,14 @@ class LoadImagesAndLabels(Dataset):
 
             self.batch_shapes = np.ceil(np.array(shapes) * img_size / 32.).astype(np.int) * 32
 
-        # Preload labels (required for weighted CE training)
-        self.imgs = [None] * n
-        self.labels = [None] * n
-        if cache_labels or image_weights:  # cache labels for faster training
-            self.labels = [np.zeros((0, 5))] * n
+        # preload labels (required for weighted CE training)
+        self.imgs = [None] * image_file_num
+        self.labels = [None] * image_file_num
+        if cache_labels or image_weights:
+            self.labels = [np.zeros(shape=(0, 5))] * image_file_num
             extract_bounding_boxes = False
             create_datasubset = False
-            pbar = tqdm(self.label_files, desc='Caching labels')
+            pbar = tqdm(self.label_files, desc='caching labels')
             nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
             for i, file in enumerate(pbar):
                 try:
@@ -283,27 +282,8 @@ class LoadImagesAndLabels(Dataset):
                     # os.system("rm '%s' '%s'" % (self.img_files[i], self.label_files[i]))  # remove
 
                 pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
-                    nf, nm, ne, nd, n)
+                    nf, nm, ne, nd, image_file_num)
             assert nf > 0, 'No labels found. See %s' % help_url
-
-        # Cache images into memory for faster training (WARNING: Large datasets may exceed system RAM)
-        if cache_images:  # if training
-            gb = 0  # Gigabytes of cached images
-            pbar = tqdm(range(len(self.img_files)), desc='Caching images')
-            for i in pbar:  # max 10k images
-                self.imgs[i] = load_image(self, i)
-                gb += self.imgs[i].nbytes
-                pbar.desc = 'Caching images (%.1fGB)' % (gb / 1E9)
-
-        # Detect corrupted images https://medium.com/joelthchao/programmatically-detect-corrupted-image-8c1b2006c3d3
-        detect_corrupted_images = False
-        if detect_corrupted_images:
-            from skimage import io  # conda install -c conda-forge scikit-image
-            for file in tqdm(self.img_files, desc='Detecting corrupted images'):
-                try:
-                    _ = io.imread(file)
-                except:
-                    print('Corrupted image detected: %s' % file)
 
     def __len__(self):
         return len(self.image_files)

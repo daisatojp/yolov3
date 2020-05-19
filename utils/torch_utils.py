@@ -51,7 +51,8 @@ def model_info(model, report='summary'):
             name = name.replace('module_list.', '')
             print('%5g %40s %9s %12g %20s %10.3g %10.3g' %
                   (i, name, p.requires_grad, p.numel(), list(p.shape), p.mean(), p.std()))
-    print('Model Summary: %g layers, %g parameters, %g gradients' % (len(list(model.parameters())), n_p, n_g))
+    print('model summary: {} layers, {} parameters, {} gradients'
+          .format(len(list(model.parameters())), n_p, n_g))
 
 
 def load_classifier(name='resnet101', n=2):

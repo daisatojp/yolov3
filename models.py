@@ -1,6 +1,4 @@
 import torch.nn.functional as F
-
-from utils.google_utils import *
 from utils.parse_config import *
 from utils.utils import *
 
@@ -8,38 +6,42 @@ ONNX_EXPORT = False
 
 
 def create_modules(module_defs, img_size, arc, trace=False):
-    # Constructs module list of layer blocks from module configuration in module_defs
-
     hyperparams = module_defs.pop(0)
-    output_filters = [int(hyperparams['channels'])]
+    filters = int(hyperparams['channels'])
+    output_filters = [filters]
     module_list = nn.ModuleList()
-    routs = []  # list of layers which rout to deeper layes
+    routes = []
     yolo_index = -1
-
     for i, mdef in enumerate(module_defs):
         modules = nn.Sequential()
-
         if mdef['type'] == 'convolutional':
-            bn = int(mdef['batch_normalize'])
+            batch_normalize = int(mdef['batch_normalize'])
             filters = int(mdef['filters'])
             size = int(mdef['size'])
-            stride = int(mdef['stride']) if 'stride' in mdef else (int(mdef['stride_y']), int(mdef['stride_x']))
-            pad = (size - 1) // 2 if int(mdef['pad']) else 0
-            modules.add_module('Conv2d', nn.Conv2d(in_channels=output_filters[-1],
-                                                   out_channels=filters,
-                                                   kernel_size=size,
-                                                   stride=stride,
-                                                   padding=pad,
-                                                   groups=int(mdef['groups']) if 'groups' in mdef else 1,
-                                                   bias=not bn))
-            if bn:
+            if 'stride' in mdef:
+                stride = int(mdef['stride'])
+            else:
+                stride = (int(mdef['stride_y']), int(mdef['stride_x']))
+            if 0 < int(mdef['pad']):
+                pad = (size - 1) // 2
+            else:
+                pad = 0
+            modules.add_module(
+                'Conv2d',
+                nn.Conv2d(
+                    in_channels=output_filters[-1],
+                    out_channels=filters,
+                    kernel_size=size,
+                    stride=stride,
+                    padding=pad,
+                    groups=int(mdef['groups']) if 'groups' in mdef else 1,
+                    bias=not batch_normalize))
+            if batch_normalize:
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
-            if mdef['activation'] == 'leaky':  # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
+            if mdef['activation'] == 'leaky':
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
-                # modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))
             elif mdef['activation'] == 'swish':
                 modules.add_module('activation', Swish())
-
         elif mdef['type'] == 'maxpool':
             size = int(mdef['size'])
             stride = int(mdef['stride'])
@@ -49,79 +51,76 @@ def create_modules(module_defs, img_size, arc, trace=False):
                 modules.add_module('MaxPool2d', maxpool)
             else:
                 modules = maxpool
-
         elif mdef['type'] == 'upsample':
             modules = nn.Upsample(scale_factor=int(mdef['stride']), mode='nearest')
-
         elif mdef['type'] == 'route':  # nn.Sequential() placeholder for 'route' layer
             layers = [int(x) for x in mdef['layers'].split(',')]
             filters = sum([output_filters[i + 1 if i > 0 else i] for i in layers])
-            routs.extend([l if l > 0 else l + i for l in layers])
-            # if mdef[i+1]['type'] == 'reorg3d':
-            #     modules = nn.Upsample(scale_factor=1/float(mdef[i+1]['stride']), mode='nearest')  # reorg3d
-
-        elif mdef['type'] == 'shortcut':  # nn.Sequential() placeholder for 'shortcut' layer
+            routes.extend([layer if layer > 0 else layer + i for layer in layers])
+        elif mdef['type'] == 'shortcut':
             filters = output_filters[int(mdef['from'])]
             layer = int(mdef['from'])
-            routs.extend([i + layer if layer < 0 else layer])
-
+            routes.extend([i + layer if layer < 0 else layer])
         elif mdef['type'] == 'reorg3d':  # yolov3-spp-pan-scale
-            # torch.Size([16, 128, 104, 104])
-            # torch.Size([16, 64, 208, 208]) <-- # stride 2 interpolate dimensions 2 and 3 to cat with prior layer
             pass
-
         elif mdef['type'] == 'yolo':
             yolo_index += 1
-            mask = [int(x) for x in mdef['mask'].split(',')]  # anchor mask
+            mask = [int(x) for x in mdef['mask'].split(',')]
             if trace:
                 modules = YOLOLayerTrace(
-                    anchors=mdef['anchors'][mask],  # anchor list
-                    nc=int(mdef['classes']),  # number of classes
+                    anchors=mdef['anchors'][mask],
+                    nc=int(mdef['classes']),
                     img_size=img_size,
-                    yolo_index=yolo_index,  # 0, 1 or 2
-                    arc=arc)  # yolo architecture
+                    yolo_index=yolo_index,
+                    arc=arc)
             else:
                 modules = YOLOLayer(
-                    anchors=mdef['anchors'][mask],  # anchor list
-                    nc=int(mdef['classes']),  # number of classes
-                    img_size=img_size,  # (416, 416)
-                    yolo_index=yolo_index,  # 0, 1 or 2
-                    arc=arc)  # yolo architecture
-
-            # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
+                    anchors=mdef['anchors'][mask],
+                    nc=int(mdef['classes']),
+                    img_size=img_size,
+                    yolo_index=yolo_index,
+                    arc=arc)
+            # Initialize preceding Conv2d() bias
+            # https://arxiv.org/pdf/1708.02002.pdf, section 3.3
             try:
-                if arc == 'defaultpw' or arc == 'Fdefaultpw':  # default with positive weights
+                b = None
+                if arc == 'defaultpw' or arc == 'Fdefaultpw':
+                    # default with positive weights
                     b = [-4, -3.6]  # obj, cls
-                elif arc == 'default':  # default no pw (40 cls, 80 obj)
+                elif arc == 'default':
+                    # default no pw (40 cls, 80 obj)
                     b = [-5.5, -5.0]
-                elif arc == 'uBCE':  # unified BCE (80 classes)
+                elif arc == 'uBCE':
+                    # unified BCE (80 classes)
                     b = [0, -9.0]
-                elif arc == 'uCE':  # unified CE (1 background + 80 classes)
+                elif arc == 'uCE':
+                    # unified CE (1 background + 80 classes)
                     b = [10, -0.1]
-                elif arc == 'Fdefault':  # Focal default no pw (28 cls, 21 obj, no pw)
+                elif arc == 'Fdefault':
+                    # Focal default no pw (28 cls, 21 obj, no pw)
                     b = [-2.1, -1.8]
-                elif arc == 'uFBCE' or arc == 'uFBCEpw':  # unified FocalBCE (5120 obj, 80 classes)
+                elif arc == 'uFBCE' or arc == 'uFBCEpw':
+                    # unified FocalBCE (5120 obj, 80 classes)
                     b = [0, -6.5]
-                elif arc == 'uFCE':  # unified FocalCE (64 cls, 1 background + 80 classes)
+                elif arc == 'uFCE':
+                    # unified FocalCE (64 cls, 1 background + 80 classes)
                     b = [7.7, -1.1]
-
+                else:
+                    print('arc={} is invalid'.format(arc))
+                    exit(-1)
                 bias = module_list[-1][0].bias.view(len(mask), -1)  # 255 to 3x85
                 bias[:, 4] += b[0] - bias[:, 4].mean()  # obj
                 bias[:, 5:] += b[1] - bias[:, 5:].mean()  # cls
-                # bias = torch.load('weights/yolov3-spp.bias.pt')[yolo_index]  # list of tensors [3x85, 3x85, 3x85]
                 module_list[-1][0].bias = torch.nn.Parameter(bias.view(-1))
-                # utils.print_model_biases(model)
             except:
                 print('WARNING: smart bias initialization failure.')
-
         else:
-            print('Warning: Unrecognized Layer Type: ' + mdef['type'])
-
+            print('unrecognized layer type ({})'.format(mdef['type']))
+            exit(-1)
         # Register module list and number of output filters
         module_list.append(modules)
         output_filters.append(filters)
-
-    return module_list, routs
+    return module_list, routes
 
 
 class SwishImplementation(torch.autograd.Function):

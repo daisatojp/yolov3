@@ -60,11 +60,8 @@ def main():
                         help='initial weight path')
     parser.add_argument('--multi-scale', action='store_true',
                         help='adjust (67% - 150%) img_size every 10 batches')
-    parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', action='store_true', help='resume training from last.pt')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
-    parser.add_argument('--cache_images', action='store_true',
-                        help='cache images for faster training')
     parser.add_argument('--arc', type=str, default='default',
                         help='yolo architecture')  # default pw, uCE, uBCE
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
@@ -106,8 +103,8 @@ def main():
     tb_writer = SummaryWriter(log_dir=os.path.join(out_dir, 'tb'))
 
     if 'pw' not in args.arc:  # remove BCELoss positive weights
-        hyp['cls_pw'] = 1.
-        hyp['obj_pw'] = 1.
+        hyp['cls_pw'] = 1.0
+        hyp['obj_pw'] = 1.0
 
     init_seeds()
 
@@ -116,7 +113,7 @@ def main():
     if args.multi_scale:
         img_sz_min = round(img_size / 32 / 1.5)
         img_sz_max = round(img_size / 32 * 1.5)
-        img_size = img_sz_max * 32  # initiate with maximum multi_scale size
+        img_size = img_sz_max * 32
         print('using multi-scale {} - {}'.format(img_sz_min * 32, img_sz_max * 32))
 
     # Configure run
@@ -170,15 +167,14 @@ def main():
         batch_size=batch_size,
         augment=True,
         hyp=hyp,  # augmentation hyperparameters
-        rect=args.rect,  # rectangular training
+        rect=False,
         image_weights=False,
-        cache_labels=epoch_num > 10,
-        cache_images=args.cache_images)
+        cache_labels=True)
     dataloader_train = torch.utils.data.DataLoader(
         dataset_train,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=not args.rect,
+        shuffle=True,
         pin_memory=True,
         collate_fn=dataset_train.collate_fn)
 
@@ -188,8 +184,7 @@ def main():
         batch_size=batch_size,
         hyp=hyp,
         rect=True,
-        cache_labels=True,
-        cache_images=args.cache_images)
+        cache_labels=True)
     dataloader_test = torch.utils.data.DataLoader(
         dataset_test,
         batch_size=batch_size,
@@ -198,9 +193,9 @@ def main():
         collate_fn=dataset_test.collate_fn)
 
     model.nc = class_num
-    model.arc = args.arc  # attach yolo architecture
-    model.hyp = hyp  # attach hyperparameters to model
-    model.class_weights = labels_to_class_weights(dataset_train.labels, class_num).to(device)  # attach class weights
+    model.arc = args.arc
+    model.hyp = hyp
+    model.class_weights = labels_to_class_weights(dataset_train.labels, class_num).to(device)
 
     Bi = 0
     torch_utils.model_info(model, report='summary')  # 'full' or 'summary'
@@ -266,7 +261,7 @@ def main():
         mean_loss = np.mean(mean_loss)
         mean_loss_box = np.mean(mean_loss_box)
         mean_loss_obj = np.mean(mean_loss_obj)
-        mean_loss_cls = np.mean(mean_lsos_cls)
+        mean_loss_cls = np.mean(mean_loss_cls)
 
         with torch.no_grad():
             results, maps = test.test(
