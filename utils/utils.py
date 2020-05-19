@@ -324,17 +324,23 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def compute_loss(p, targets, model):  # predictions, targets, model
-    ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
-    lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
+def compute_loss(p, targets, model):
+    device = p[0].device
+    lcls = torch.tensor([0.0], dtype=torch.float32).to(device)
+    lbox = torch.tensor([0.0], dtype=torch.float32).to(device)
+    lobj = torch.tensor([0.0], dtype=torch.float32).to(device)
     tcls, tbox, indices, anchor_vec = build_targets(model, targets)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
     red = 'mean'  # Loss reduction (sum or mean)
 
     # Define criteria
-    BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h['cls_pw']]), reduction=red)
-    BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h['obj_pw']]), reduction=red)
+    BCEcls = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([h['cls_pw']], dtype=torch.float32).to(device),
+        reduction=red)
+    BCEobj = nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([h['obj_pw']], dtype=torch.float32).to(device),
+        reduction=red)
     BCE = nn.BCEWithLogitsLoss()
     CE = nn.CrossEntropyLoss()  # weight=model.class_weights
 

@@ -8,16 +8,18 @@ from utils.datasets import *
 from utils.utils import *
 
 
-def test(cfg,
-         data,
-         weights=None,
-         batch_size=16,
-         img_size=416,
-         conf_thres=0.001,
-         nms_thres=0.5,
-         save_json=False,
-         model=None,
-         dataloader=None):
+def test(
+        device,
+        cfg,
+        data,
+        weights=None,
+        batch_size=16,
+        img_size=416,
+        conf_thres=0.001,
+        nms_thres=0.5,
+        save_json=False,
+        model=None,
+        dataloader=None):
     # Initialize/load model and set device
     if model is None:
         device = torch_utils.select_device(opt.device, batch_size=batch_size)
