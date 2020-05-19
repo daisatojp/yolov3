@@ -197,26 +197,26 @@ def main():
         pin_memory=True,
         collate_fn=dataset_test.collate_fn)
 
-    nb = len(dataloader_train)
     model.nc = class_num
     model.arc = args.arc  # attach yolo architecture
     model.hyp = hyp  # attach hyperparameters to model
     model.class_weights = labels_to_class_weights(dataset_train.labels, class_num).to(device)  # attach class weights
 
-    results = (0, 0, 0, 0, 0, 0, 0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'
+    Bi = 0
     torch_utils.model_info(model, report='summary')  # 'full' or 'summary'
     for epoch in range(start_epoch, epoch_num):
         model.train()
-        print(('{:10s}' * 7).format('epoch', 'GIoU', 'obj', 'cls', 'total', 'img_size', 'small_layer'))
-        small_layer_num = 0
-        mean_loss = torch.zeros(4).to(device)  # mean losses
-        progress_bar = tqdm(enumerate(dataloader_train), total=nb)
+        mean_loss = []
+        mean_loss_box = []
+        mean_loss_obj = []
+        mean_loss_cls = []
+        mean_small_layer_num = []
+        progress_bar = tqdm(enumerate(dataloader_train), total=len(dataloader_train))
         for i, (imgs, targets, paths, _) in progress_bar:
-            ni = i + nb * epoch  # number integrated batches (since train start)
+            Bi += 1
             imgs = imgs.type(torch.float32).to(device) / 255.0
             targets = targets.to(device)
 
-            # multi-scale training
             if args.multi_scale:
                 if ni / accumulate_num % 10 == 0:  #  adjust (67% - 150%) every 10 batches
                     img_size = random.randrange(img_sz_min, img_sz_max + 1) * 32
@@ -227,23 +227,26 @@ def main():
 
             pred = model(imgs)
 
-            loss, loss_items = compute_loss(pred, targets, model)
+            loss, loss_box, loss_obj, loss_cls = compute_loss(pred, targets, model)
+
             if not torch.isfinite(loss):
-                print('WARNING: non-finite loss, ending training ', loss_items)
-                return results
+                print('loss({}) is non-finite'.format(loss_items))
+                exit(-1)
 
-            # Scale loss by nominal batch_size of 64
-            loss *= batch_size / 64
+            mean_loss.append(loss.item())
+            mean_loss_box.append(loss_box.item())
+            mean_loss_obj.append(loss_obj.item())
+            mean_loss_cls.append(loss_cls.item())
 
-            # Compute gradient
+            loss = loss / accumulate_num
+
             if mixed_precision:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
             else:
                 loss.backward()
 
-            # Accumulate gradient for x batches before optimizing
-            if ni % accumulate_num == 0:
+            if Bi % accumulate_num == 0:
                 if 0.0 < args.sparsity:
                     update_bn(args.sparsity, model)
                 optimizer.step()
@@ -254,42 +257,62 @@ def main():
                 if isinstance(m, nn.BatchNorm2d):
                     small_layer_num += np.count_nonzero(
                         m.weight.data.abs().detach().cpu().numpy() < 0.1)
-
-            mean_loss = (mean_loss * i + loss_items) / (i + 1)
-            progress_bar.set_description(
-                '{:10d} {:10.3f} {:10.3f} {:10.3f} {:10.3f} {:10d} {:10d}'
-                .format(epoch, *mean_loss, img_size, small_layer_num))
+            mean_small_layer_num.append(small_layer_num)
 
         scheduler.step()
 
         final_epoch = (epoch + 1 == epoch_num)
 
+        mean_loss = np.mean(mean_loss)
+        mean_loss_box = np.mean(mean_loss_box)
+        mean_loss_obj = np.mean(mean_loss_obj)
+        mean_loss_cls = np.mean(mean_lsos_cls)
+
         with torch.no_grad():
             results, maps = test.test(
                 device=device,
-                cfg=cfg,
-                data=data,
+                cfg=cfg_path,
+                data=data_path,
                 batch_size=batch_size,
-                img_size=opt.img_size,
+                img_size=img_size,
                 model=model,
                 conf_thres=0.1,
                 save_json=False,
-                dataloader=testloader)
+                dataloader=dataloader_test)
 
-        x = list(mean_loss) + list(results) + [small_layer_num]
-        titles = ['GIoU', 'Objectness', 'Classification', 'Train loss',
-                  'Precision', 'Recall', 'mAP', 'F1',
-                  'val GIoU', 'val Objectness', 'val Classification',
-                  'small_layer_num']
-        for xi, title in zip(x, titles):
+        titles = [
+            'train_loss',
+            'train_loss_box',
+            'train_loss_obj',
+            'train_loss_cls',
+            'P', 'R', 'mAP', 'F1',
+            'val_loss_box',
+            'val_loss_obj',
+            'val_loss_cls',
+            'small_layer_num'
+        ]
+        values = [
+            mean_loss,
+            mean_loss_box,
+            mean_loss_obj,
+            mean_loss_cls,
+            results[0],
+            results[1],
+            results[2],
+            results[3],
+            results[4],
+            results[5],
+            results[6],
+            mean_small_layer_num
+        ]
+        for title, value in zip(titles, values):
+            print('{}={}'.format(title, value))
             tb_writer.add_scalar(title, xi, epoch)
 
-        # Update best mAP
         fitness = sum(results[4:])  # total loss
         if fitness < best_fitness:
             best_fitness = fitness
 
-        # Save training results
         chkpt = {
             'epoch': epoch,
             'best_fitness': best_fitness,
