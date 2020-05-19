@@ -198,7 +198,7 @@ def main():
     model.class_weights = labels_to_class_weights(dataset_train.labels, class_num).to(device)
 
     Bi = 0
-    torch_utils.model_info(model, report='summary')  # 'full' or 'summary'
+    torch_utils.model_info(model)
     for epoch in range(start_epoch, epoch_num):
         model.train()
         mean_loss = []
@@ -206,8 +206,7 @@ def main():
         mean_loss_obj = []
         mean_loss_cls = []
         mean_small_layer_num = []
-        progress_bar = tqdm(enumerate(dataloader_train), total=len(dataloader_train))
-        for i, (imgs, targets, paths, _) in progress_bar:
+        for i, (imgs, targets, paths, _) in enumerate(tqdm(dataloader_train)):
             Bi += 1
             imgs = imgs.type(torch.float32).to(device) / 255.0
             targets = targets.to(device)

@@ -43,22 +43,22 @@ def load_classes(path):
     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
 
-def labels_to_class_weights(labels, nc=80):
-    # Get class weights (inverse frequency) from training labels
-    if labels[0] is None:  # no labels loaded
+def labels_to_class_weights(labels, class_num):
+    """
+    get class weights (inverse frequency) from training labels
+    :param labels: list of label, label format is [class, x, y, w, h]
+    :param class_num:
+    :return:
+    """
+    if labels[0] is None:
+        # no labels loaded
         return torch.Tensor()
-
-    labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
-    weights = np.bincount(classes, minlength=nc)  # occurences per class
-
-    # Prepend gridpoint count (for uCE trianing)
-    # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
-    # weights = np.hstack([gpi * len(labels)  - weights.sum() * 9, weights * 9]) ** 0.5  # prepend gridpoints to start
-
+    labels = np.concatenate(labels, axis=0)
+    classes = labels[:, 0].astype(np.int)
+    weights = np.bincount(classes, minlength=class_num)
     weights[weights == 0] = 1  # replace empty bins with 1
-    weights = 1 / weights  # number of targets per class
-    weights /= weights.sum()  # normalize
+    weights = 1 / weights
+    weights /= weights.sum()
     return torch.from_numpy(weights)
 
 
