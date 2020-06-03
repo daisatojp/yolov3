@@ -116,7 +116,6 @@ def main():
         img_size = img_sz_max * 32
         print('using multi-scale {} - {}'.format(img_sz_min * 32, img_sz_max * 32))
 
-    # Configure run
     data_dict = parse_data_cfg(data_path)
     train_path = data_dict['train']
     test_path = data_dict['valid']

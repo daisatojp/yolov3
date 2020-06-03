@@ -4,6 +4,10 @@ import numpy as np
 
 
 def parse_model_cfg(path):
+    """
+    :param path:
+    :return:
+    """
     # Parse the yolo *.cfg file and return module definitions path may be 'cfg/yolov3.cfg', 'yolov3.cfg', or 'yolov3'
     if not path.endswith('.cfg'):  # add .cfg suffix if omitted
         path += '.cfg'
@@ -45,6 +49,10 @@ def parse_model_cfg(path):
 
 
 def parse_data_cfg(path):
+    """
+    :param path: path to ~.data
+    :return:
+    """
     # Parses the data configuration file
     if not os.path.exists(path) and os.path.exists('data' + os.sep + path):  # add data/ prefix if omitted
         path = 'data' + os.sep + path

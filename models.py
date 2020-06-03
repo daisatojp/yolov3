@@ -145,45 +145,12 @@ class Swish(nn.Module):
         return x.mul_(torch.sigmoid(x))
 
 
-class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
+class Mish(nn.Module):
+    """
+    https://github.com/digantamisra98/Mish
+    """
     def forward(self, x):
         return x.mul_(F.softplus(x).tanh())
-
-
-class YOLOLayerTrace(nn.Module):
-    def __init__(self, anchors, nc, img_size, yolo_index, arc):
-        super(YOLOLayerTrace, self).__init__()
-        div = None
-        if yolo_index == 0:
-            div = 32
-        if yolo_index == 1:
-            div = 16
-        if yolo_index == 2:
-            div = 8
-
-        self.anchors = torch.Tensor(anchors)
-        self.na = len(anchors)  # number of anchors (3)
-        self.nc = nc  # number of classes
-        self.nx = img_size[1] // div  # number of x grid points
-        self.ny = img_size[0] // div  # number of y grid points
-        self.arc = arc
-        create_grids(self, img_size, (self.nx, self.ny), 'cpu', torch.float32)
-
-    def forward(self, p, img_size, var=None):
-        bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
-
-        # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
-        p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
-
-        io = p.clone()
-        io[..., 0:2].sigmoid_()
-        io[..., 0:2].add_(self.grid_xy)
-        io[..., 2:4].exp_()
-        io[..., 2:4].mul_(self.anchor_wh)
-        io[..., :4].mul_(self.stride)
-        io[..., 4:].sigmoid_()
-
-        return io.view(bs, -1, 5 + self.nc), p
 
 
 class YOLOLayer(nn.Module):
@@ -216,55 +183,70 @@ class YOLOLayer(nn.Module):
 
         if self.training:
             return p
-
         elif ONNX_EXPORT:
             # Constants CAN NOT BE BROADCAST, ensure correct shape!
             m = self.na * self.nx * self.ny
             ngu = self.ng.repeat((1, m, 1))
             grid_xy = self.grid_xy.repeat((1, self.na, 1, 1, 1)).view(1, m, 2)
             anchor_wh = self.anchor_wh.repeat((1, 1, self.nx, self.ny, 1)).view(1, m, 2) / ngu
-
             p = p.view(m, 5 + self.nc)
             xy = torch.sigmoid(p[..., 0:2]) + grid_xy[0]  # x, y
             wh = torch.exp(p[..., 2:4]) * anchor_wh[0]  # width, height
             p_conf = torch.sigmoid(p[:, 4:5])  # Conf
             p_cls = F.softmax(p[:, 5:5 + self.nc], 1) * p_conf  # SSD-like conf
             return torch.cat((xy / ngu[0], wh, p_conf, p_cls), 1).t()
-
-            # p = p.view(1, m, 5 + self.nc)
-            # xy = torch.sigmoid(p[..., 0:2]) + grid_xy  # x, y
-            # wh = torch.exp(p[..., 2:4]) * anchor_wh  # width, height
-            # p_conf = torch.sigmoid(p[..., 4:5])  # Conf
-            # p_cls = p[..., 5:5 + self.nc]
-            # # Broadcasting only supported on first dimension in CoreML. See onnx-coreml/_operators.py
-            # # p_cls = F.softmax(p_cls, 2) * p_conf  # SSD-like conf
-            # p_cls = torch.exp(p_cls).permute((2, 1, 0))
-            # p_cls = p_cls / p_cls.sum(0).unsqueeze(0) * p_conf.permute((2, 1, 0))  # F.softmax() equivalent
-            # p_cls = p_cls.permute(2, 1, 0)
-            # return torch.cat((xy / ngu, wh, p_conf, p_cls), 2).squeeze().t()
-
         else:  # inference
-            # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
-            io = p.clone()  # inference output
+            io = p.clone()
             io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
-            # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
             io[..., :4] *= self.stride
-
-            if 'default' in self.arc:  # seperate obj and cls
+            if 'default' in self.arc:
+                # seperate obj and cls
                 torch.sigmoid_(io[..., 4:])
-            elif 'BCE' in self.arc:  # unified BCE (80 classes)
+            elif 'BCE' in self.arc:
+                # unified BCE (80 classes)
                 torch.sigmoid_(io[..., 5:])
                 io[..., 4] = 1
-            elif 'CE' in self.arc:  # unified CE (1 background + 80 classes)
+            elif 'CE' in self.arc:
+                # unified CE (1 background + 80 classes)
                 io[..., 4:] = F.softmax(io[..., 4:], dim=4)
                 io[..., 4] = 1
-
             if self.nc == 1:
                 io[..., 5] = 1  # single-class model https://github.com/ultralytics/yolov3/issues/235
-
             # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
             return io.view(bs, -1, 5 + self.nc), p
+
+
+class YOLOLayerTrace(nn.Module):
+    def __init__(self, anchors, nc, img_size, yolo_index, arc):
+        super(YOLOLayerTrace, self).__init__()
+        div = None
+        if yolo_index == 0:
+            div = 32
+        if yolo_index == 1:
+            div = 16
+        if yolo_index == 2:
+            div = 8
+        self.anchors = torch.Tensor(anchors)
+        self.na = len(anchors)  # number of anchors (3)
+        self.nc = nc  # number of classes
+        self.nx = img_size[1] // div  # number of x grid points
+        self.ny = img_size[0] // div  # number of y grid points
+        self.arc = arc
+        create_grids(self, img_size, (self.nx, self.ny), 'cpu', torch.float32)
+
+    def forward(self, p, img_size, var=None):
+        bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]
+        # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+        p = p.view(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
+        io = p.clone()
+        io[..., 0:2].sigmoid_()
+        io[..., 0:2].add_(self.grid_xy)
+        io[..., 2:4].exp_()
+        io[..., 2:4].mul_(self.anchor_wh)
+        io[..., :4].mul_(self.stride)
+        io[..., 4:].sigmoid_()
+        return io.view(bs, -1, 5 + self.nc), p
 
 
 class Darknet(nn.Module):
@@ -272,11 +254,9 @@ class Darknet(nn.Module):
 
     def __init__(self, cfg, img_size=(416, 416), arc='default', trace=False):
         super(Darknet, self).__init__()
-
         self.module_defs = parse_model_cfg(cfg)
         self.module_list, self.routs = create_modules(self.module_defs, img_size, arc, trace=trace)
         self.yolo_layers = get_yolo_layers(self)
-
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
         self.version = np.array([0, 2, 5], dtype=np.int32)  # (int32) version info: major, minor, revision
         self.seen = np.array([0], dtype=np.int64)  # (int64) number of images seen during training

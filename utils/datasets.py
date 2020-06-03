@@ -309,7 +309,7 @@ class LoadImagesAndLabels(Dataset):
 
             # Letterbox
             h, w = img.shape[:2]
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            shape = self.batch_shapes[self.batch_index[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
 
             # Load labels
